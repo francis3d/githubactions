@@ -16,12 +16,11 @@ concurrency:
   group: codeql-${{ github.ref_name }}
   cancel-in-progress: false
 
-timeout-minutes: 180
-
 jobs:
   analyze:
     name: Security / CodeQL
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     strategy:
       matrix:
         language:

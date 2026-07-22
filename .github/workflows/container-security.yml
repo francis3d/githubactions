@@ -1,0 +1,81 @@
+name: Container Vulnerability Scan
+
+on:
+  workflow_run:
+    workflows:
+      - Artifact Build
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-vuln-scan-${{ github.ref_name }}
+  cancel-in-progress: false
+
+timeout-minutes: 90
+
+jobs:
+  vulnerability_scan:
+    name: Container / Vulnerability Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a
+        with:
+          name: build-artifact
+          path: ./artifact
+
+      - name: Ensure artifact digest exists
+        run: |
+          set -euo pipefail
+          if [ ! -f artifact/artifact-digest.txt ]; then
+            echo 'Missing artifact-digest.txt from build-artifact.'
+            exit 1
+          fi
+
+      - name: Create SBOM from dist
+        run: |
+          set -euo pipefail
+          if [ ! -d artifact/dist ]; then
+            echo 'Artifact dist directory is missing.'
+            exit 1
+          fi
+          npm install -g @cyclonedx/bom || true
+          cyclonedx-bom -o bom.xml dist
+
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
+        with:
+          scan-type: fs
+          input: ./artifact/dist
+          format: json
+          output: trivy-fs-report.json
+          severity: CRITICAL,HIGH,MEDIUM
+          exit-code: 1
+
+      - name: Upload container scan artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: container-scan-report
+          path: |
+            bom.xml
+            trivy-fs-report.json
+
+  quality_gate_final_validation:
+    name: Quality Gate / Final Validation
+    runs-on: ubuntu-latest
+    needs: vulnerability_scan
+    if: always()
+    steps:
+      - name: Consolidate container vulnerability result
+        run: |
+          if [ "${{ needs.vulnerability_scan.result }}" != 'success' ]; then
+            echo 'Container / Vulnerability Scan did not complete successfully.'
+            exit 1
+          fi
+          echo 'Container / Vulnerability Scan completed successfully.'
+          echo 'SBOM and Trivy reports uploaded.' >> $GITHUB_STEP_SUMMARY

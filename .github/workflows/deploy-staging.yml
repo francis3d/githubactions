@@ -1,0 +1,78 @@
+name: Staging Deploy
+
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: staging-deploy-${{ github.ref_name }}
+  cancel-in-progress: false
+
+timeout-minutes: 60
+
+jobs:
+  deploy:
+    name: Staging / Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment:
+      name: staging
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a
+        with:
+          name: build-artifact
+          path: ./artifact
+
+      - name: Ensure staging URL exists
+        run: |
+          set -euo pipefail
+          if [ -z "${STAGING_URL:-}" ]; then
+            echo 'STAGING_URL is not set. Set the environment variable in the staging Environment.'
+            exit 1
+          fi
+          echo "Staging URL: $STAGING_URL" >> $GITHUB_STEP_SUMMARY
+
+      - name: Deploy to staging
+        run: |
+          set -euo pipefail
+          echo 'Deployment command not defined in repo. Please implement deployment steps using STAGING_URL or a staging deployment script.'
+          exit 1
+
+  health_check:
+    name: Staging / Health Check
+    runs-on: ubuntu-latest
+    needs: deploy
+    timeout-minutes: 30
+    environment:
+      name: staging
+    steps:
+      - name: Validate staging URL
+        run: |
+          set -euo pipefail
+          if [ -z "${STAGING_URL:-}" ]; then
+            echo 'STAGING_URL not configured in Environment staging.'
+            exit 1
+          fi
+          curl --fail --max-time 20 "$STAGING_URL" | head -c 1
+
+  quality_gate_final_validation:
+    name: Quality Gate / Final Validation
+    runs-on: ubuntu-latest
+    needs: [deploy, health_check]
+    if: always()
+    steps:
+      - name: Consolidate staging deployment result
+        run: |
+          if [ "${{ needs.deploy.result }}" != 'success' ] || [ "${{ needs.health_check.result }}" != 'success' ]; then
+            echo 'Staging deployment or health check failed.'
+            exit 1
+          fi
+          echo 'Staging deployment and health check passed.'
+          echo 'STAGING_URL: '${STAGING_URL} >> $GITHUB_STEP_SUMMARY

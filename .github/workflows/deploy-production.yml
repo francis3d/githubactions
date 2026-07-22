@@ -1,0 +1,71 @@
+name: Production Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+timeout-minutes: 90
+
+jobs:
+  deploy_production:
+    name: Production / Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment:
+      name: production
+      url: ${{ vars.PRODUCTION_URL }}
+    steps:
+      - name: Ensure production URL exists
+        run: |
+          set -euo pipefail
+          if [ -z "${PRODUCTION_URL:-}" ]; then
+            echo 'PRODUCTION_URL is not set. Configure this variable in the production Environment.'
+            exit 1
+          fi
+          echo "Production URL: $PRODUCTION_URL" >> $GITHUB_STEP_SUMMARY
+
+      - name: Deploy production artifact
+        run: |
+          set -euo pipefail
+          echo 'Production deployment command not defined in repository.'
+          echo 'Please implement a deployment script or CI command that uses the same digest produced in build-artifact.'
+          exit 1
+
+  smoke_test:
+    name: Production / Smoke Tests
+    runs-on: ubuntu-latest
+    needs: deploy_production
+    timeout-minutes: 30
+    steps:
+      - name: Smoke test production URL
+        run: |
+          set -euo pipefail
+          if [ -z "${PRODUCTION_URL:-}" ]; then
+            echo 'PRODUCTION_URL is not set.'
+            exit 1
+          fi
+          curl --fail --max-time 20 "$PRODUCTION_URL" | head -c 1
+
+  quality_gate_final_validation:
+    name: Quality Gate / Final Validation
+    runs-on: ubuntu-latest
+    needs: [deploy_production, smoke_test]
+    if: always()
+    steps:
+      - name: Consolidate production result
+        run: |
+          if [ "${{ needs.deploy_production.result }}" != 'success' ] || [ "${{ needs.smoke_test.result }}" != 'success' ]; then
+            echo 'Production deploy or smoke test failed.'
+            exit 1
+          fi
+          echo 'Production deployment and smoke test succeeded.'
