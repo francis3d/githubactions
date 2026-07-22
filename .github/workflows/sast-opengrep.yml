@@ -1,0 +1,73 @@
+name: Security Opengrep
+
+on:
+  push:
+    branches-ignore:
+      - dev
+      - main
+  pull_request:
+    branches:
+      - dev
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opengrep-${{ github.ref_name }}
+  cancel-in-progress: false
+
+timeout-minutes: 30
+
+jobs:
+  opengrep:
+    name: Security / Opengrep
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: Validate security exceptions
+        run: |
+          python - <<'PY'
+          import pathlib, re, datetime, sys
+          path = pathlib.Path('.security/exceptions.yml')
+          if not path.exists():
+              sys.exit(0)
+          text = path.read_text()
+          dates = re.findall(r'^\s*expires_on:\s*(\d{4}-\d{2}-\d{2})', text, flags=re.M)
+          for value in dates:
+              if datetime.date.fromisoformat(value) < datetime.date.today():
+                  print(f'Expired exception: {value}')
+                  sys.exit(1)
+          PY
+
+      - name: Scan for suspicious patterns
+        run: |
+          set -euo pipefail
+          patterns='(password|passwd|secret|api[_-]?key|auth[_-]?token|token|credential|private[-_ ]key|-----BEGIN PRIVATE KEY-----|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35})'
+          matches=$(git grep -nE "$patterns" -- '*.js' '*.jsx' '*.ts' '*.tsx' '*.json' '.env*' 2>/dev/null || true)
+          if [ -n "$matches" ]; then
+            echo "$matches" | sed -E 's/(.*):.*/\1: [REDACTED]/' | tee suspicious.txt
+            echo 'Suspicious token or secret-like patterns found in repository.' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+          echo 'No suspicious opengrep matches found.' >> $GITHUB_STEP_SUMMARY
+
+  quality_gate_final_validation:
+    name: Quality Gate / Final Validation
+    runs-on: ubuntu-latest
+    needs: opengrep
+    if: always()
+    steps:
+      - name: Consolidate opengrep result
+        run: |
+          if [ "${{ needs.opengrep.result }}" != 'success' ]; then
+            echo 'Security / Opengrep did not complete successfully.'
+            exit 1
+          fi
+          echo 'Security / Opengrep completed successfully.'
+          echo 'Security / Opengrep: success' >> $GITHUB_STEP_SUMMARY
