@@ -1,0 +1,311 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - dev
+      - main
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref_name }}
+  cancel-in-progress: false
+
+timeout-minutes: 45
+
+jobs:
+  syntax:
+    name: CI / Syntax
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: Validate security exceptions
+        run: |
+          python - <<'PY'
+          import pathlib, re, datetime, sys
+          path = pathlib.Path('.security/exceptions.yml')
+          if not path.exists():
+              sys.exit(0)
+          text = path.read_text()
+          dates = re.findall(r'^\s*expires_on:\s*(\d{4}-\d{2}-\d{2})', text, flags=re.M)
+          for value in dates:
+              if datetime.date.fromisoformat(value) < datetime.date.today():
+                  print(f'Expired exception: {value}')
+                  sys.exit(1)
+          PY
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 20
+
+      - name: Cache npm
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify JavaScript syntax
+        id: syntax-check
+        run: |
+          set -euo pipefail
+          count=$(find src -type f \( -name '*.js' -o -name '*.jsx' \) | wc -l)
+          if [ "$count" -eq 0 ]; then
+            echo "No JS/JSX source files found for syntax verification." >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+          failures=0
+          while IFS= read -r -d '' file; do
+            if ! node --check "$file"; then
+              failures=1
+            fi
+          done < <(find src -type f \( -name '*.js' -o -name '*.jsx' \) -print0)
+          if [ "$failures" -ne 0 ]; then
+            echo "JavaScript syntax validation failed." >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+          echo "JavaScript syntax validation passed." >> $GITHUB_STEP_SUMMARY
+
+  lint:
+    name: CI / Lint
+    runs-on: ubuntu-latest
+    needs: syntax
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Validate security exceptions
+        run: |
+          python - <<'PY'
+          import pathlib, re, datetime, sys
+          path = pathlib.Path('.security/exceptions.yml')
+          if not path.exists():
+              sys.exit(0)
+          text = path.read_text()
+          dates = re.findall(r'^\s*expires_on:\s*(\d{4}-\d{2}-\d{2})', text, flags=re.M)
+          for value in dates:
+              if datetime.date.fromisoformat(value) < datetime.date.today():
+                  print(f'Expired exception: {value}')
+                  sys.exit(1)
+          PY
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 20
+
+      - name: Cache npm
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Detect lint command
+        id: lint-detect
+        run: |
+          set -euo pipefail
+          if node -e "const p=require('./package.json'); process.stdout.write(p.scripts && p.scripts.lint ? 'true' : 'false')" | grep -q true; then
+            echo "applicable=true" >> $GITHUB_OUTPUT
+          else
+            echo "applicable=false" >> $GITHUB_OUTPUT
+            echo "No lint script configured in package.json." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Run lint
+        if: steps.lint-detect.outputs.applicable == 'true'
+        run: npm run lint
+
+  unit_tests:
+    name: CI / Unit Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Validate security exceptions
+        run: |
+          python - <<'PY'
+          import pathlib, re, datetime, sys
+          path = pathlib.Path('.security/exceptions.yml')
+          if not path.exists():
+              sys.exit(0)
+          text = path.read_text()
+          dates = re.findall(r'^\s*expires_on:\s*(\d{4}-\d{2}-\d{2})', text, flags=re.M)
+          for value in dates:
+              if datetime.date.fromisoformat(value) < datetime.date.today():
+                  print(f'Expired exception: {value}')
+                  sys.exit(1)
+          PY
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 20
+
+      - name: Cache npm
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm test
+
+  coverage:
+    name: CI / Coverage
+    runs-on: ubuntu-latest
+    needs: unit_tests
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Validate security exceptions
+        run: |
+          python - <<'PY'
+          import pathlib, re, datetime, sys
+          path = pathlib.Path('.security/exceptions.yml')
+          if not path.exists():
+              sys.exit(0)
+          text = path.read_text()
+          dates = re.findall(r'^\s*expires_on:\s*(\d{4}-\d{2}-\d{2})', text, flags=re.M)
+          for value in dates:
+              if datetime.date.fromisoformat(value) < datetime.date.today():
+                  print(f'Expired exception: {value}')
+                  sys.exit(1)
+          PY
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 20
+
+      - name: Cache npm
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run coverage report
+        run: |
+          set -euo pipefail
+          if node -e "const p=require('./package.json'); process.stdout.write(p.scripts && p.scripts.coverage ? 'true' : 'false')" | grep -q true; then
+            npm run coverage -- --reporter=lcov --reporter=text
+          else
+            npm exec vitest run --coverage --reporter=lcov --reporter=text
+          fi
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: coverage-report
+          path: coverage/lcov.info
+
+  build:
+    name: CI / Build
+    runs-on: ubuntu-latest
+    needs: coverage
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Validate security exceptions
+        run: |
+          python - <<'PY'
+          import pathlib, re, datetime, sys
+          path = pathlib.Path('.security/exceptions.yml')
+          if not path.exists():
+              sys.exit(0)
+          text = path.read_text()
+          dates = re.findall(r'^\s*expires_on:\s*(\d{4}-\d{2}-\d{2})', text, flags=re.M)
+          for value in dates:
+              if datetime.date.fromisoformat(value) < datetime.date.today():
+                  print(f'Expired exception: {value}')
+                  sys.exit(1)
+          PY
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 20
+
+      - name: Cache npm
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Upload build output
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ci-build-output
+          path: dist
+
+  quality_gate_final_validation:
+    name: Quality Gate / Final Validation
+    runs-on: ubuntu-latest
+    needs:
+      - syntax
+      - lint
+      - unit_tests
+      - coverage
+      - build
+    if: always()
+    steps:
+      - name: Consolidate CI results
+        run: |
+          set -euo pipefail
+          declare -A results
+          results[syntax]="${{ needs.syntax.result }}"
+          results[lint]="${{ needs.lint.result }}"
+          results[unit_tests]="${{ needs.unit_tests.result }}"
+          results[coverage]="${{ needs.coverage.result }}"
+          results[build]="${{ needs.build.result }}"
+          failed=false
+          for job in syntax lint unit_tests coverage build; do
+            result=${results[$job]}
+            echo "$job -> $result"
+            if [ "$result" != 'success' ]; then
+              failed=true
+            fi
+          done
+          if [ "$failed" = true ]; then
+            echo 'One or more CI jobs did not complete successfully.'
+            exit 1
+          fi
+          echo 'All CI jobs completed successfully.'
+          echo 'CI / Syntax: '${results[syntax]} >> $GITHUB_STEP_SUMMARY
+          echo 'CI / Lint: '${results[lint]} >> $GITHUB_STEP_SUMMARY
+          echo 'CI / Unit Tests: '${results[unit_tests]} >> $GITHUB_STEP_SUMMARY
+          echo 'CI / Coverage: '${results[coverage]} >> $GITHUB_STEP_SUMMARY
+          echo 'CI / Build: '${results[build]} >> $GITHUB_STEP_SUMMARY
